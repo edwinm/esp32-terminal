@@ -1,0 +1,8 @@
+.pio/
+managed_components/
+sdkconfig.makerfabs_s3_parallel_tft35
+sdkconfig.*.old
+build/
+.vscode/
+.DS_Store
+data/

@@ -1,0 +1,35 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "lcd.cpp"
+        "console_uart.c"
+        "sd_card.c"
+        "wifi_scan.c"
+        "usb_hid.c"
+        "sys_info.c"
+        "perf_test.c"
+        "ui/ui.c"
+        "ui/ui_tab_info.c"
+        "ui/ui_tab_speed.c"
+        "ui/ui_tab_sd.c"
+        "ui/ui_tab_i2c.c"
+        "ui/ui_tab_periph.c"
+        "ui/ui_tab_wifi.c"
+        "ui/ui_tab_hid.c"
+        "ui/ui_tab_console.c"
+    INCLUDE_DIRS "." "ui"
+    REQUIRES LovyanGFX
+    PRIV_REQUIRES
+        driver
+        esp_lcd
+        esp_timer
+        esp_wifi
+        nvs_flash
+        esp_netif
+        esp_event
+        fatfs
+        sdmmc
+        vfs
+        esp_psram
+        esp_driver_tsens
+)

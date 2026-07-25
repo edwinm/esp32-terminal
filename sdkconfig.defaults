@@ -9,6 +9,10 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # --- PSRAM: 2 MB embedded QUAD (WROOM-1-N16R2) — NOT octal ---
+# Nothing needs PSRAM today; it stays on because scrollback will live there.
+# Note CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL below: plain malloc() sends
+# allocations above that size to PSRAM, so DMA buffers use heap_caps_malloc()
+# with MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL explicitly rather than by luck.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
 CONFIG_SPIRAM_SPEED_80M=y
@@ -21,30 +25,18 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
 
-# --- Console stays on UART0 (CP2104). Native USB is reserved for TinyUSB HID. ---
+# --- Console + flashing stay on UART0 (CP2104). The native USB-OTG port is
+#     the terminal link (CDC-ACM), so IDF logs never pollute the terminal. ---
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
-# --- TinyUSB: enable one HID interface on the native USB-OTG port ---
-CONFIG_TINYUSB_HID_COUNT=1
+# --- TinyUSB: one CDC-ACM interface on the native USB-OTG port ---
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=1
+CONFIG_TINYUSB_CDC_RX_BUFSIZE=4096
+CONFIG_TINYUSB_CDC_TX_BUFSIZE=2048
+CONFIG_TINYUSB_CDC_EP_BUFSIZE=8192
+# The descriptor strings (including a MAC-derived serial) are supplied in
+# io/usb_cdc.c, so the CONFIG_TINYUSB_DESC_* defaults here are not used.
 
-# --- FATFS (SD card, long filenames) ---
-CONFIG_FATFS_LFN_HEAP=y
-CONFIG_FATFS_MAX_LFN=255
-
-# --- Main task stack (UI bring-up happens here) ---
+# --- Main task stack (display + terminal bring-up happens here) ---
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
-
-# --- LVGL (managed component Kconfig) ---
-CONFIG_LV_CONF_SKIP=y
-CONFIG_LV_COLOR_DEPTH_16=y
-CONFIG_LV_DEF_REFR_PERIOD=16
-CONFIG_LV_USE_CLIB_MALLOC=y
-CONFIG_LV_USE_CLIB_STRING=y
-CONFIG_LV_USE_CLIB_SPRINTF=y
-CONFIG_LV_FONT_MONTSERRAT_12=y
-CONFIG_LV_FONT_MONTSERRAT_14=y
-CONFIG_LV_FONT_MONTSERRAT_16=y
-CONFIG_LV_FONT_MONTSERRAT_20=y
-CONFIG_LV_FONT_MONTSERRAT_28=y
-CONFIG_LV_USE_PERF_MONITOR=y
-CONFIG_LV_USE_DEMO_BENCHMARK=y

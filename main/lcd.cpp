@@ -1,12 +1,15 @@
-// lcd.cpp — LovyanGFX ILI9488 (16-bit I2S parallel) display + touch + backlight.
+// lcd.cpp — LovyanGFX ILI9488 (16-bit parallel) display + touch + backlight.
+//
+// The LGFX class below is hardware-verified on this specific unit. Do not
+// restructure it: pin map WR=35, RD=48, RS/DC=36, CS=37, BL=45, data D0..D15 as
+// listed, touch I2C SDA=38 SCL=39. (The v2.0 factory firmware uses WR=18/RS=17/
+// CS=46 instead, which leaves THIS board's panel blank.)
 //
 // Everything display/touch/I2C goes through LovyanGFX (legacy I2C driver). We do
 // NOT use the esp_lcd_touch / i2c_master path: mixing the legacy and new I2C
 // drivers in one binary aborts at boot (check_i2c_driver_conflict).
 //
-// Pin map verified on this board: WR=35, RD=48, RS/DC=36, CS=37, BL=45,
-// data D0..D15 (see below), touch I2C SDA=38 SCL=39. (The v2.0 factory firmware
-// uses WR=18/RS=17/CS=46 instead, which leaves THIS board's panel blank.)
+// See lcd.h for the threading invariant and the byte-order rule for pixel data.
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include <lgfx/v1/platforms/esp32/common.hpp>   // lgfx::i2c
@@ -62,10 +65,11 @@ class LGFX : public lgfx::LGFX_Device {
     }
 
 public:
+    lgfx::ITouch *touch_dev(void) { return _touch; }
+
     LGFX(void) {
-        {   // 16-bit parallel bus over the I2S peripheral (port 0).
-            // This board revision uses WR=35, RS=36, CS=37 (per the reference
-            // LGFX-IDF project), NOT the factory-firmware 18/17/46.
+        {   // 16-bit parallel bus. On the ESP32-S3 this is LCD_CAM + GDMA
+            // (not I2S as on the original ESP32); cfg.port is the LCD_CAM port.
             auto cfg = _bus.config();
             cfg.port = 0;
             cfg.freq_write = 40000000;
@@ -120,7 +124,8 @@ esp_err_t lcd_init(void)
         return ESP_FAIL;
     }
     s_lcd.setRotation(1);                 // landscape 480x320
-    s_lcd.setSwapBytes(true);
+    // No setSwapBytes(): every push below passes an explicit swap flag, so the
+    // global setting would be dead weight and actively misleading.
     s_lcd.fillScreen(0x0000);
     s_lcd.setBrightness(0);
     s_bl_percent = 0;
@@ -142,43 +147,67 @@ void lcd_backlight_set(int percent)
 
 int lcd_backlight_get(void) { return s_bl_percent; }
 
-void lcd_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
-{
-    int32_t w = area->x2 - area->x1 + 1;
-    int32_t h = area->y2 - area->y1 + 1;
-    s_lcd.startWrite();
-    s_lcd.setAddrWindow(area->x1, area->y1, w, h);
-    s_lcd.writePixels((uint16_t *)px_map, w * h, true);
-    s_lcd.endWrite();
-    lv_display_flush_ready(disp);
-}
+// --- Touch -----------------------------------------------------------------
 
 bool lcd_get_touch(uint16_t *x, uint16_t *y) { return s_lcd.getTouch(x, y); }
+
+bool lcd_get_touch_raw(uint16_t *x, uint16_t *y) { return s_lcd.getTouchRaw(x, y); }
+
 const char *lcd_touch_name(void) { return s_touch_name; }
 uint8_t     lcd_touch_addr(void) { return s_touch_addr; }
 
-int lcd_i2c_scan(uint8_t *out, int max)
+void lcd_touch_set_offset_rotation(uint8_t offset)
 {
-    int n = 0;
-    for (uint8_t a = 0x08; a <= 0x77 && n < max; a++) {
-        if (lgfx::i2c::beginTransaction(I2C_PORT_NUM, a, I2C_FREQ_HZ, false).has_value()
-         && lgfx::i2c::endTransaction(I2C_PORT_NUM).has_value()) {
-            out[n++] = a;
-        } else {
-            lgfx::i2c::endTransaction(I2C_PORT_NUM);
-        }
-    }
-    return n;
+    lgfx::ITouch *t = s_lcd.touch_dev();
+    if (!t) return;
+    auto cfg = t->config();
+    cfg.offset_rotation = offset;
+    t->config(cfg);
 }
 
-void lcd_raw_fill(uint16_t color)   { s_lcd.fillScreen(color); }
-void lcd_raw_start(void)            { s_lcd.startWrite(); }
-void lcd_raw_end(void)             { s_lcd.endWrite(); }
+uint8_t lcd_touch_get_offset_rotation(void)
+{
+    lgfx::ITouch *t = s_lcd.touch_dev();
+    return t ? t->config().offset_rotation : 0;
+}
 
+// --- Pixel pushing ---------------------------------------------------------
+// All colours here are byte-swapped RGB565 (lgfx::swap565_t), see lcd.h.
+
+// LovyanGFX's setColor() path takes a *native* RGB565 uint16_t and swaps it
+// internally, so the drawing helpers unswap on the way in. The pixel-buffer
+// pushes below stay byte-swapped, which is the fast, conversion-free path.
+static inline uint16_t unswap(uint16_t c) { return (uint16_t)((c >> 8) | (c << 8)); }
+
+void lcd_raw_fill(uint16_t color) { s_lcd.fillScreen(unswap(color)); }
+void lcd_raw_start(void)          { s_lcd.startWrite(); }
+void lcd_raw_end(void)            { s_lcd.endWrite(); }
+
+// Both pushes hold their own transaction. This is not optional: LovyanGFX's
+// setAddrWindow() is startWrite/setWindow/endWrite internally, so calling it
+// with no transaction open leaves CS deasserted and the pixels that follow are
+// dropped on the floor. Nesting is reference-counted, so a caller that wraps a
+// whole frame in lcd_raw_start()/lcd_raw_end() still gets exactly one
+// transaction — and only that outer endWrite() waits on DMA.
 void lcd_raw_push(const uint16_t *buf, int x, int y, int w, int h)
 {
+    s_lcd.startWrite();
     s_lcd.setAddrWindow(x, y, w, h);
     s_lcd.writePixels((uint16_t *)buf, w * h, false);
+    s_lcd.endWrite();
+}
+
+void lcd_raw_push_dma(const uint16_t *buf, int x, int y, int w, int h)
+{
+    s_lcd.startWrite();
+    s_lcd.setAddrWindow(x, y, w, h);
+    s_lcd.writePixelsDMA((uint16_t *)buf, w * h, false);
+    s_lcd.endWrite();
+}
+
+void lcd_raw_fill_rect(int x, int y, int w, int h, uint16_t color)
+{
+    s_lcd.fillRect(x, y, w, h, unswap(color));
 }
 
 } // extern "C"

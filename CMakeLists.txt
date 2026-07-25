@@ -9,4 +9,4 @@ idf_build_set_property(COMPILE_OPTIONS
     "-Wno-error=array-bounds;-Wno-error=stringop-overflow;-Wno-error=stringop-overread;-Wno-error=maybe-uninitialized"
     APPEND)
 
-project(makerfabs_s3_tft35_demo)
+project(esp32_terminal)

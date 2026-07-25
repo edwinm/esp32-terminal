@@ -6,3 +6,7 @@ build/
 .vscode/
 .DS_Store
 data/
+# tools/hosttest/render.sh output
+screen.png
+screen.ppm
+__pycache__/

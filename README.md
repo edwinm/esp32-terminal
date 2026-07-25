@@ -311,7 +311,8 @@ Type=simple
 # A serial tty has no window size of its own, so tell it — otherwise ncurses
 # falls back to a guess and htop lays out for the wrong width.
 ExecStartPre=/bin/stty -F /dev/esp32term rows 24 cols 80
-ExecStart=/usr/bin/htop --readonly --no-function-bar --no-mouse
+ExecStart=/usr/bin/htop --readonly --no-mouse
+Environment=HTOPRC=/etc/htoprc-dashboard
 
 # Unprivileged. This, not --readonly, is the boundary that actually contains
 # what someone at the screen can do: an unprivileged htop can still SEE every
@@ -388,12 +389,27 @@ for — no USB device can do it.
 
 Notes:
 
-- **Reclaiming rows.** 24 rows is not many, so the htop flags above earn their
-  place: `--no-function-bar` drops the `F1Help F2Setup …` strip, which under
-  `--readonly` is a row spent advertising keys that do nothing. `--no-mouse`
-  stops htop enabling mouse tracking the board will never report. Add
-  `--no-meters` to drop the CPU/memory gauges if you only want the process
-  list, and `-d 20` to refresh every 2 s instead of 1.5.
+- **Reclaiming the bottom row.** Under `--readonly` the `F1Help F2Setup …`
+  strip is a whole row advertising keys that do nothing. Hide it with an
+  htoprc, which works on every htop 3.x — the `--no-function-bar` flag only
+  exists from 3.5 onwards and makes older versions exit with "unrecognized
+  option":
+
+  ```bash
+  sudo tee /etc/htoprc-dashboard >/dev/null <<'EOF'
+  hide_function_bar=2
+  hide_kernel_threads=1
+  EOF
+  ```
+
+  `2` hides it permanently. `1` instead makes it hideable on demand — it starts
+  visible and disappears when you press **Esc**, which the on-screen keyboard
+  has. (Verified by rendering htop's output through this project's own parser:
+  at `0`, Esc does nothing.)
+
+- `--no-mouse` stops htop enabling mouse tracking the board will never report,
+  and `-d 20` refreshes every 2 s rather than 1.5 if you want less redraw
+  traffic.
 - Any program works, not just `htop`: `journalctl -f`, `watch -c -n5 …`, or your
   own script. Anything full-screen and ncurses-based behaves best.
 - To go back to a login, re-enable `serial-getty@esp32term.service` and point

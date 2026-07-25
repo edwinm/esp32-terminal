@@ -359,34 +359,6 @@ sudo systemctl disable --now serial-getty@esp32term.service
 sudo systemctl enable --now esp32-dashboard.service
 ```
 
-### Showing the boot log
-
-The board cannot display boot messages *as they happen*. Firmware, the
-bootloader and early kernel init all run before USB is enumerated, so the device
-does not exist yet — that part is physics, not configuration. And
-`console=ttyACM0` does not work either: the kernel's USB serial console lives in
-the usb-serial layer and expects `console=ttyUSB0` (FTDI, CP210x and friends),
-while this board is CDC-ACM, whose driver registers no console.
-
-What does work is to follow the journal from the moment the board appears, after
-dumping everything that happened before it. In practice you see the whole boot
-log, a second or two late:
-
-```
-ExecStart=/usr/bin/journalctl -b -n all -f -o short-monotonic --no-hostname
-SupplementaryGroups=dialout systemd-journal
-```
-
-Substitute those two lines into the unit above. `-b` limits it to this boot,
-`-n all` dumps the backlog rather than the last ten lines, `--no-hostname` buys
-back width on an 80-column screen, and `systemd-journal` group membership is
-what lets an unprivileged service read the journal at all.
-
-Shutdown is the mirror image: the host cuts USB power as it goes down, so the
-final messages are lost. If you genuinely need console output across the whole
-power cycle, that is what a real RS-232 console or a BMC/IPMI serial-over-LAN is
-for — no USB device can do it.
-
 Notes:
 
 - **Reclaiming the bottom row.** Under `--readonly` the `F1Help F2Setup …`
@@ -416,6 +388,34 @@ Notes:
   `SYSTEMD_WANTS` back at it.
 - `systemctl status esp32-dashboard` and `journalctl -u esp32-dashboard` are
   where errors go, since stderr is routed to the journal rather than the board.
+
+### Showing the boot log
+
+The board cannot display boot messages *as they happen*. Firmware, the
+bootloader and early kernel init all run before USB is enumerated, so the device
+does not exist yet — that part is physics, not configuration. And
+`console=ttyACM0` does not work either: the kernel's USB serial console lives in
+the usb-serial layer and expects `console=ttyUSB0` (FTDI, CP210x and friends),
+while this board is CDC-ACM, whose driver registers no console.
+
+What does work is to follow the journal from the moment the board appears, after
+dumping everything that happened before it. In practice you see the whole boot
+log, a second or two late:
+
+```
+ExecStart=/usr/bin/journalctl -b -n all -f -o short-monotonic --no-hostname
+SupplementaryGroups=dialout systemd-journal
+```
+
+Substitute those two lines into the unit above. `-b` limits it to this boot,
+`-n all` dumps the backlog rather than the last ten lines, `--no-hostname` buys
+back width on an 80-column screen, and `systemd-journal` group membership is
+what lets an unprivileged service read the journal at all.
+
+Shutdown is the mirror image: the host cuts USB power as it goes down, so the
+final messages are lost. If you genuinely need console output across the whole
+power cycle, that is what a real RS-232 console or a BMC/IPMI serial-over-LAN is
+for — no USB device can do it.
 
 ### Security of a dashboard
 

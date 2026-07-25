@@ -165,29 +165,47 @@ A login prompt appears on the board. Tap the screen for the keyboard and log in.
 ### Step 5 — make colours work
 
 `systemd` runs serial gettys with `TERM=vt220`, which throws away colour, so
-`htop` and `ls --color` come out monochrome. Fix it:
+`htop` and `ls --color` come out monochrome.
+
+The stock unit already ends its `ExecStart` with `$TERM`, so overriding just the
+environment is enough. Write the drop-in directly rather than going through
+`sudo systemctl edit` — on a headless box that drops you into whatever `$EDITOR`
+happens to be, and an edit that is not saved fails silently:
 
 ```bash
-sudo systemctl edit serial-getty@ttyACM0.service
-```
-
-Put this in the editor that opens:
-
-```ini
+sudo mkdir -p /etc/systemd/system/serial-getty@ttyACM0.service.d
+sudo tee /etc/systemd/system/serial-getty@ttyACM0.service.d/term.conf >/dev/null <<'EOF'
 [Service]
 Environment=TERM=xterm-256color
-ExecStart=
-ExecStart=-/sbin/agetty -o '-p -- \\u' --keep-baud --noclear %I xterm-256color
-```
-
-Then:
-
-```bash
+EOF
 sudo systemctl daemon-reload
 sudo systemctl restart serial-getty@ttyACM0.service
 ```
 
-That is the whole setup. Log in on the board and run `htop`.
+**Log out on the board and log in again** — an existing session keeps whatever
+`TERM` it started with. Then check on the board:
+
+```bash
+echo $TERM        # want: xterm-256color
+tput colors       # want: 256
+```
+
+That is the whole setup. Run `htop`.
+
+If `TERM` is still wrong, confirm the drop-in was actually picked up:
+
+```bash
+systemctl cat serial-getty@ttyACM0.service | tail -20
+```
+
+The `term.conf` contents should appear at the end. Failing all of that, set it
+at login instead, which bypasses systemd entirely:
+
+```bash
+sudo tee /etc/profile.d/esp32-term.sh >/dev/null <<'EOF'
+case "$(tty)" in /dev/ttyACM*) export TERM=xterm-256color ;; esac
+EOF
+```
 
 ### Optional — a stable name if the server has other ACM devices
 
@@ -216,7 +234,8 @@ sudo systemctl enable --now serial-getty@esp32term.service
 | no `/dev/ttyACM*` at all | wrong socket — you are in the CP2104 one (`ttyUSB*`) |
 | screen is dark, nothing enumerates | the cable is charge-only; use a data cable |
 | board shows the splash but a getty is running | it booted after the getty opened the port, so the banner was missed — press Enter |
-| text appears but `htop` is monochrome | `TERM` is still `vt220`; do step 5 |
+| text appears but `htop` is monochrome | `TERM` is still `vt220`. Check `echo $TERM` on the board; if step 5's drop-in is missing from `systemctl cat serial-getty@ttyACM0.service`, it was never saved |
+| `TERM` right in a new login, wrong in the current one | log out and back in — a live session keeps the `TERM` it started with |
 | permission denied opening the port | add yourself to `dialout`, or use `sudo` |
 | garbage on screen at power-on | the ROM bootloader prints on the *other* (UART) port at boot; harmless |
 

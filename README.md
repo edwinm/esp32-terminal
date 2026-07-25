@@ -287,6 +287,129 @@ Two things worth knowing:
   is exactly this grid. Nothing extra is needed. `resize` works too if you want
   to be certain.
 
+## Running a dashboard instead of a login
+
+If you want the board to *show* something — `htop`, a log tail, a status script —
+rather than offer a login prompt, run that program on the tty instead of a getty.
+The on-screen keyboard still reaches it, so `htop` stays interactive; there is
+simply no login.
+
+This assumes the `esp32term` symlink from step 6.
+
+**Read the security note below before enabling this.** A dashboard has no login,
+so whoever can touch the screen gets whatever the program offers.
+
+```bash
+sudo tee /etc/systemd/system/esp32-dashboard.service >/dev/null <<'EOF'
+[Unit]
+Description=htop on the ESP32 terminal
+BindsTo=dev-esp32term.device
+After=dev-esp32term.device
+
+[Service]
+Type=simple
+# A serial tty has no window size of its own, so tell it — otherwise ncurses
+# falls back to a guess and htop lays out for the wrong width.
+ExecStartPre=/bin/stty -F /dev/esp32term rows 24 cols 80
+ExecStart=/usr/bin/htop --readonly
+
+# Unprivileged. This, not --readonly, is the boundary that actually contains
+# what someone at the screen can do: an unprivileged htop can still SEE every
+# process, but cannot kill, renice or strace anything it does not own.
+DynamicUser=yes
+SupplementaryGroups=dialout          # needed to open the tty
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/esp32term
+TTYReset=yes
+TTYVHangup=yes
+Environment=TERM=xterm-256color
+Environment=COLUMNS=80 LINES=24
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+If `DynamicUser=yes` gives trouble on your distro, `User=nobody` with the same
+`SupplementaryGroups=dialout` does the same job. Do **not** set `ProtectProc=` —
+it would hide the very processes the dashboard exists to show.
+
+Point the udev rule at this service rather than the getty, so it starts whenever
+the board is plugged in:
+
+```bash
+sudo tee /etc/udev/rules.d/99-esp32-term.rules >/dev/null <<'EOF'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="4001", \
+  SYMLINK+="esp32term", TAG+="systemd", ENV{SYSTEMD_WANTS}="esp32-dashboard.service"
+EOF
+sudo udevadm control --reload && sudo udevadm trigger
+sudo systemctl disable --now serial-getty@esp32term.service
+sudo systemctl enable --now esp32-dashboard.service
+```
+
+Notes:
+
+- Any program works, not just `htop`: `journalctl -f`, `watch -c -n5 …`, or your
+  own script. Anything full-screen and ncurses-based behaves best.
+- To go back to a login, re-enable `serial-getty@esp32term.service` and point
+  `SYSTEMD_WANTS` back at it.
+- `systemctl status esp32-dashboard` and `journalctl -u esp32-dashboard` are
+  where errors go, since stderr is routed to the journal rather than the board.
+
+### Security of a dashboard
+
+A serial console is a console. With a getty (step 4) the screen offers a *login
+prompt*, so it is no worse than a keyboard and monitor plugged into the machine.
+A dashboard is different: **there is no authentication at all**, and whatever you
+run is reachable by anyone who can touch the screen.
+
+For `htop` specifically, an interactive session can:
+
+| key | effect |
+|---|---|
+| `F9` / `k` | send any signal to any process — kill `sshd`, `auditd`, a database |
+| `F7` / `F8` | renice |
+| `s` | attach `strace` to a process, seeing its syscalls and their data |
+| `l` | list a process's open files via `lsof` |
+
+There is no way to spawn a shell from htop, so this is not arbitrary command
+execution — but "kill anything" and "attach a tracer to anything" is bad enough.
+`--readonly` is documented as disabling "all system and process changing
+features", which covers kill and renice; the manual does not say what it does
+about `s` and `l`, so do not lean on it as your only defence.
+
+That is why the unit above runs unprivileged. The layers, in order of how much
+they actually buy you:
+
+1. **Run it as a non-root user** (`DynamicUser=yes`). An unprivileged htop can
+   still see every process, but cannot signal, renice or ptrace anything it does
+   not own. This is the boundary that holds even if htop grows a new feature.
+2. **`--readonly`** on top, as defence in depth.
+3. **Consider what is simply *visible*.** htop shows full command lines, and
+   command lines routinely contain secrets (`--password=…`, tokens, API keys).
+   A screen in a corridor or an open-plan office leaks those to anyone walking
+   past, read-only and unprivileged or not. That is a property of the screen,
+   not of the configuration.
+
+Worth weighing against the alternative: if whoever can touch the screen can also
+reach the machine's USB ports, they can already plug in a keyboard or boot media
+and none of this matters. The dashboard genuinely raises risk in the case where
+the *screen* is exposed but the *machine* is not — a board on the front of a
+locked rack, or on a desk with the server elsewhere. If that is your situation,
+prefer the getty, or point the dashboard at something that reveals less than a
+process list (`watch` on a handful of metrics, say).
+
 ## Build & flash
 
 Needs [PlatformIO](https://platformio.org/install). It downloads the ESP-IDF

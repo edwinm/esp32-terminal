@@ -222,7 +222,15 @@ The symptom on the board is the status strip reading **`USB idle … no getty
 attached`** — the link is fine and the host has enumerated it, but nothing has
 opened the port.
 
-Give the board a fixed name and bind the getty to that instead:
+To get a prompt back immediately, point the getty at whatever device the board
+is on now (`ls -l /dev/serial/by-id/` says which):
+
+```bash
+sudo systemctl restart serial-getty@ttyACM0.service
+```
+
+That lasts until the next unplug. For a fix that sticks, give the board a fixed
+name and bind the getty to that instead:
 
 ```bash
 sudo tee /etc/udev/rules.d/99-esp32-term.rules >/dev/null <<'EOF'
@@ -260,7 +268,7 @@ hex from step 2) to the rule and give each a distinct `SYMLINK+`.
 
 | symptom | cause |
 |---|---|
-| status strip says `no getty attached` | the host enumerated the board but nothing opened the port. Usually a replug that landed on a different `ttyACM*`, or a getty that stopped when the board was unplugged — do step 6 |
+| status strip says `no getty attached` | the host enumerated the board but nothing opened the port. Usually a replug that landed on a different `ttyACM*`, or a getty that stopped when the board was unplugged. `sudo systemctl restart serial-getty@ttyACM0.service` gets a prompt back now; step 6 stops it recurring |
 | worked before, dead after replugging | same thing; step 6 is what fixes it permanently |
 | no `/dev/ttyACM*` at all | wrong socket — you are in the CP2104 one (`ttyUSB*`) |
 | screen is dark, nothing enumerates | the cable is charge-only; use a data cable |

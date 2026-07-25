@@ -38,6 +38,12 @@ static int  s_last_view_top = -1, s_last_view_left = -1, s_last_scale = -1;
 static bool s_last_kbd = false;
 
 static bool s_need_letterbox = true;   // repaint the sliver below the last row
+// Set by the render_invalidate_* calls. Without it the fast-path gate in
+// render_frame() — which only looks at the model generation and the cursor —
+// would return before ever consulting the shadow, and any repaint requested by
+// something other than the terminal itself (a dismissed overlay, say) would be
+// silently dropped.
+static bool s_forced_dirty = true;
 static int  s_prev_cx = -1, s_prev_cy = -1;
 static bool s_prev_cursor_on;
 static bool s_last_reverse_video;
@@ -200,12 +206,30 @@ void render_invalidate_rows(int r0, int r1)
             s_shadow[r][c].attr = 0xFFFF;
         }
     }
+    s_forced_dirty = true;
 }
 
 void render_invalidate_all(void)
 {
     render_invalidate_rows(0, TERM_ROWS - 1);
     s_need_letterbox = true;
+}
+
+void render_invalidate_pixel_band(int y0, int y1)
+{
+    const int ch = CELL_H * s_scale;
+    if (y1 < GRID_Y) return;
+    if (y0 < GRID_Y) y0 = GRID_Y;
+
+    int first = (y0 - GRID_Y) / ch;
+    int last  = (y1 - GRID_Y) / ch;
+
+    for (int i = first; i <= last; i++) {
+        int r = s_view_top + i;          // screen row -> model row
+        if (r < 0) continue;
+        if (r >= TERM_ROWS) break;
+        render_invalidate_rows(r, r);
+    }
 }
 
 void render_set_scale(int scale)
@@ -263,7 +287,7 @@ bool render_frame(void)
         s_last_scale = s_scale;
         s_last_kbd = s_kbd_visible;
         s_last_reverse_video = reverse_video;
-    } else if (gen == s_last_generation &&
+    } else if (!s_forced_dirty && gen == s_last_generation &&
                cx == s_prev_cx && cy == s_prev_cy && cursor_on == s_prev_cursor_on) {
         return false;                            // nothing at all to do
     }
@@ -289,6 +313,7 @@ bool render_frame(void)
     const int chh = CELL_H * s_scale;
 
     bool painted = false;
+    s_forced_dirty = false;      // the shadow diff below now owns the repaint
     lcd_raw_start();
 
     for (int i = 0; i < rows; i++) {

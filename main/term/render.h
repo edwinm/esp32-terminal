@@ -26,6 +26,13 @@ bool render_frame(void);
 void render_invalidate_rows(int r0, int r1);
 void render_invalidate_all(void);
 
+// Force a repaint of whatever occupies screen pixel rows [y0, y1]. Use this
+// rather than render_invalidate_rows() when you know where something was drawn
+// but not which terminal row was under it: with the keyboard up the viewport is
+// panned, so screen row and model row are not the same number, and only the
+// renderer knows the offset.
+void render_invalidate_pixel_band(int y0, int y1);
+
 // Zoom. scale 1 = 80x24 at 6x13; scale 2 = 12x26 cells, a 40x12 window that
 // follows the cursor. Anything else is clamped.
 void render_set_scale(int scale);

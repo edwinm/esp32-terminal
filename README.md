@@ -311,7 +311,7 @@ Type=simple
 # A serial tty has no window size of its own, so tell it — otherwise ncurses
 # falls back to a guess and htop lays out for the wrong width.
 ExecStartPre=/bin/stty -F /dev/esp32term rows 24 cols 80
-ExecStart=/usr/bin/htop --readonly
+ExecStart=/usr/bin/htop --readonly --no-function-bar --no-mouse
 
 # Unprivileged. This, not --readonly, is the boundary that actually contains
 # what someone at the screen can do: an unprivileged htop can still SEE every
@@ -388,6 +388,12 @@ for — no USB device can do it.
 
 Notes:
 
+- **Reclaiming rows.** 24 rows is not many, so the htop flags above earn their
+  place: `--no-function-bar` drops the `F1Help F2Setup …` strip, which under
+  `--readonly` is a row spent advertising keys that do nothing. `--no-mouse`
+  stops htop enabling mouse tracking the board will never report. Add
+  `--no-meters` to drop the CPU/memory gauges if you only want the process
+  list, and `-d 20` to refresh every 2 s instead of 1.5.
 - Any program works, not just `htop`: `journalctl -f`, `watch -c -n5 …`, or your
   own script. Anything full-screen and ncurses-based behaves best.
 - To go back to a login, re-enable `serial-getty@esp32term.service` and point

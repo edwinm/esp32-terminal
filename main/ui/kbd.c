@@ -260,11 +260,11 @@ static void popup_hide(void)
     int pw = KBD_POPUP_W, ph = KBD_POPUP_H;
 
     // Repaint whatever the popup covered: keyboard rows it overlapped, and, if
-    // it reached above the keyboard, the terminal rows behind it.
+    // it reached above the keyboard, the terminal behind it. That second part
+    // has to go through the pixel-band call — the viewport is panned while the
+    // keyboard is up, so the screen row the popup sat on is not the model row.
     if (py < KBD_Y) {
-        int top_row = (py - GRID_Y) / CELL_H;
-        int bot_row = (py + ph - 1 - GRID_Y) / CELL_H;
-        render_invalidate_rows(top_row, bot_row);
+        render_invalidate_pixel_band(py, py + ph - 1);
     }
 
     const kbd_key_t (*rows)[12] = layout();

@@ -409,6 +409,47 @@ static void test_keyboard_bytes(void)
     expect(tap_slide(key_x(0, 1), key_y(0), 100, KBD_Y - 30),
            "", "sliding off the keyboard cancels the keypress");
 
+    // The preview popup for a top keyboard row reaches up over the terminal.
+    // Releasing must restore the terminal underneath it — and the invalidation
+    // has to be in model-row space, not screen-row space, because the viewport
+    // is panned while the keyboard is up. Getting that wrong leaves the upper
+    // slice of the popup stranded on screen with nothing to repaint it.
+    {
+        // Put the cursor at the bottom of the buffer so the viewport is panned
+        // as far as it goes; with view_top == 0 the bug is invisible.
+        feed("\033[24;1H");
+        render_frame();
+
+        static uint16_t before[LCD_W * KBD_Y];
+        memcpy(before, s_fb, sizeof(before));
+
+        touch_event_t press = { TOUCH_PRESS, (uint16_t)key_x(0, 1),
+                                (uint16_t)key_y(0) };
+        kbd_handle_touch(&press);
+
+        bool popup_drew_over_terminal = (memcmp(before, s_fb, sizeof(before)) != 0);
+        if (!popup_drew_over_terminal) {
+            printf("  FAIL top-row preview never reached the terminal area; "
+                   "this check proves nothing\n");
+            s_failures++;
+        }
+
+        touch_event_t release = { TOUCH_RELEASE, (uint16_t)key_x(0, 1),
+                                  (uint16_t)key_y(0) };
+        kbd_handle_touch(&release);
+        render_frame();
+
+        if (memcmp(before, s_fb, sizeof(before)) != 0) {
+            int bad = -1;
+            for (int i = 0; i < LCD_W * KBD_Y; i++) {
+                if (before[i] != s_fb[i]) { bad = i; break; }
+            }
+            printf("  FAIL preview left pixels behind above the keyboard "
+                   "(first at %d,%d)\n", bad % LCD_W, bad / LCD_W);
+            s_failures++;
+        }
+    }
+
     // A tap above the keyboard dismisses it — on release, like everything else.
     tap(100, KBD_Y - 10);
     if (kbd_visible()) { printf("  FAIL tap above the keyboard did not dismiss it\n"); s_failures++; }

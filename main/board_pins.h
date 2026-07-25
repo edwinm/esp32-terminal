@@ -67,13 +67,20 @@
 #define STATUS_Y           GRID_H                 // 312
 #define STATUS_H           (320 - GRID_H)         // 8
 
-// On-screen keyboard overlay: 4 rows of 36px, sitting above the status strip.
+// On-screen keyboard overlay: 4 rows sitting above the status strip. At this
+// panel's ~165 DPI a key is 6.2 x 6.5 mm — small, so the height is as generous
+// as the terminal can spare, and ui/kbd.c leans on the preview popup and
+// slide-to-correct rather than on size alone.
 #define KBD_ROWS           4
-#define KBD_KEY_H          36
-#define KBD_H              (KBD_ROWS * KBD_KEY_H) // 144
-#define KBD_Y              (GRID_H - KBD_H)       // 168
+#define KBD_KEY_H          42
+#define KBD_H              (KBD_ROWS * KBD_KEY_H) // 168
+#define KBD_Y              (GRID_H - KBD_H)       // 144
 #define KBD_UNITS          12                     // layout columns
 #define KBD_UNIT_W         (GRID_W / KBD_UNITS)   // 40
 
 // Terminal rows still visible while the keyboard is up.
-#define KBD_VISIBLE_ROWS   (KBD_Y / CELL_H)       // 12
+#define KBD_VISIBLE_ROWS   (KBD_Y / CELL_H)       // 11
+
+// Magnified preview of the key under the finger, drawn clear of it.
+#define KBD_POPUP_W        64
+#define KBD_POPUP_H        56

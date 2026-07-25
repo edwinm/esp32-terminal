@@ -22,6 +22,11 @@ bool kbd_handle_touch(const touch_event_t *ev);
 // Full repaint; called on show and whenever the layer changes.
 void kbd_draw(void);
 
+// Redraw the magnified key preview if one is showing. Call after render_frame()
+// repaints, since the preview sits over the terminal area and would otherwise be
+// painted out from under the user's finger.
+void kbd_refresh_overlay(bool grid_was_repainted);
+
 // Sticky-modifier state, mirrored in the status strip so it is still visible
 // once the keyboard is dismissed.
 bool kbd_shift_active(void);

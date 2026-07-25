@@ -163,7 +163,10 @@ static void disp_task(void *arg)
         touch_event_t ev = touch_poll();
         kbd_handle_touch(&ev);
 
-        render_frame();
+        // The key preview sits over the terminal area, so it has to go back on
+        // top of anything the grid repaint just drew underneath it.
+        bool painted = render_frame();
+        kbd_refresh_overlay(painted);
         status_tick();
 
         vTaskDelayUntil(&last, pdMS_TO_TICKS(RENDER_TICK_MS));

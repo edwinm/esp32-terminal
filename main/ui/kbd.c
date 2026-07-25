@@ -79,6 +79,9 @@ static const kbd_key_t k_symbols[KBD_ROWS][12] = {
 #define C_MOD_LOCKED lcd_rgb(0xb0, 0x7a, 0x10)
 #define C_LABEL      lcd_rgb(0xe4, 0xe4, 0xe4)
 #define C_GAP        lcd_rgb(0x08, 0x09, 0x0c)
+#define C_POPUP_BG   lcd_rgb(0x1c, 0x4c, 0x78)
+#define C_POPUP_EDGE lcd_rgb(0x8c, 0xc8, 0xf0)
+#define C_POPUP_FG   lcd_rgb(0xff, 0xff, 0xff)
 #define KEY_GAP      2      // pixels of gap drawn inside each key's rectangle
 
 // --- State ------------------------------------------------------------------
@@ -89,9 +92,20 @@ static bool    s_visible;
 static int     s_layer;                // 0 = letters, 1 = symbols
 static uint8_t s_shift, s_ctrl;
 static int     s_down_row = -1, s_down_col = -1;
+static bool    s_repeat_fired;         // auto-repeat already sent this press
+static bool    s_ignore_until_release; // the press was consumed (e.g. it opened
+                                       // the keyboard); swallow the rest of it
+static bool    s_press_began_outside;  // distinguishes the tap-outside dismissal
+                                       // from a keypress dragged off and cancelled
 
-// The widest key (space, 3 units) bounds the scratch buffer.
+static bool s_popup_shown;
+static int  s_popup_x, s_popup_y, s_popup_row = -1, s_popup_col = -1;
+
+// The widest key (space, 3 units) bounds the key scratch buffer. The popup gets
+// its own, because kbd_refresh_overlay() re-pushes it after arbitrary key
+// redraws and must not find someone else's pixels there.
 static uint16_t s_keybuf[3 * KBD_UNIT_W * KBD_KEY_H];
+static uint16_t s_popupbuf[KBD_POPUP_W * KBD_POPUP_H];
 
 static const kbd_key_t (*layout(void))[12]
 {
@@ -120,8 +134,8 @@ static int key_at_unit(int row, int u, int *out_x, int *out_units)
 
 // --- Drawing ----------------------------------------------------------------
 
-// Blit one glyph into the key scratch buffer, clipping to the key.
-static void draw_glyph(uint16_t *buf, int stride, int x, int y,
+// Blit one glyph into a scratch buffer, clipping to it.
+static void draw_glyph(uint16_t *buf, int stride, int height, int x, int y,
                        uint16_t cp, uint16_t fg, int scale)
 {
     const uint8_t *g = font_glyph(cp, false);
@@ -134,7 +148,7 @@ static void draw_glyph(uint16_t *buf, int stride, int x, int y,
                 for (int sx = 0; sx < scale; sx++) {
                     int px = x + gx * scale + sx;
                     int py = y + gy * scale + sy;
-                    if (px < 0 || px >= stride || py < 0 || py >= KBD_KEY_H) continue;
+                    if (px < 0 || px >= stride || py < 0 || py >= height) continue;
                     buf[py * stride + px] = fg;
                 }
             }
@@ -180,18 +194,26 @@ static uint16_t key_background(const kbd_key_t *k, bool down)
     return (k->code >= K_SHIFT) ? C_KEY_SPECIAL : C_KEY;
 }
 
+// Pixel rectangle of a key.
+static void key_rect(int row, int col, int *x, int *y, int *w, int *h)
+{
+    const kbd_key_t (*rows)[12] = layout();
+    int ux = 0;
+    for (int i = 0; i < col; i++) ux += rows[row][i].units;
+    *x = ux * KBD_UNIT_W;
+    *y = KBD_Y + row * KBD_KEY_H;
+    *w = rows[row][col].units * KBD_UNIT_W;
+    *h = KBD_KEY_H;
+}
+
 static void draw_key(int row, int col, bool down)
 {
     const kbd_key_t (*rows)[12] = layout();
     const kbd_key_t *k = &rows[row][col];
     if (k->units == 0) return;
 
-    int ux = 0;
-    for (int i = 0; i < col; i++) ux += rows[row][i].units;
-
-    int w = k->units * KBD_UNIT_W;
-    int x = ux * KBD_UNIT_W;
-    int y = KBD_Y + row * KBD_KEY_H;
+    int x, y, w, h;
+    key_rect(row, col, &x, &y, &w, &h);
 
     uint16_t bg = key_background(k, down);
 
@@ -215,10 +237,108 @@ static void draw_key(int row, int col, bool down)
     int lx = (w - label_w) / 2;
     int ly = (KBD_KEY_H - FONT_CELL_H * scale) / 2;
     for (int i = 0; i < n; i++) {
-        draw_glyph(s_keybuf, w, lx + i * FONT_CELL_W * scale, ly, label[i], C_LABEL, scale);
+        draw_glyph(s_keybuf, w, KBD_KEY_H, lx + i * FONT_CELL_W * scale, ly,
+                   label[i], C_LABEL, scale);
     }
 
     lcd_raw_push(s_keybuf, x, y, w, KBD_KEY_H);
+}
+
+// --- Magnified key preview --------------------------------------------------
+//
+// The reason this exists: a key is ~6mm across and your fingertip covers it
+// completely, so without a preview you cannot tell what you are about to commit
+// until after you have committed it. Drawn clear of the finger — above the key,
+// or below it on the top row where there is no room above.
+
+static void popup_hide(void)
+{
+    if (!s_popup_shown) return;
+    s_popup_shown = false;
+
+    int px = s_popup_x, py = s_popup_y;
+    int pw = KBD_POPUP_W, ph = KBD_POPUP_H;
+
+    // Repaint whatever the popup covered: keyboard rows it overlapped, and, if
+    // it reached above the keyboard, the terminal rows behind it.
+    if (py < KBD_Y) {
+        int top_row = (py - GRID_Y) / CELL_H;
+        int bot_row = (py + ph - 1 - GRID_Y) / CELL_H;
+        render_invalidate_rows(top_row, bot_row);
+    }
+
+    const kbd_key_t (*rows)[12] = layout();
+    for (int r = 0; r < KBD_ROWS; r++) {
+        int ry = KBD_Y + r * KBD_KEY_H;
+        if (ry + KBD_KEY_H <= py || ry >= py + ph) continue;
+        for (int c = 0; c < 12; c++) {
+            if (rows[r][c].units == 0) break;
+            int kx, ky, kw, kh;
+            key_rect(r, c, &kx, &ky, &kw, &kh);
+            if (kx + kw <= px || kx >= px + pw) continue;
+            draw_key(r, c, (r == s_down_row && c == s_down_col));
+        }
+    }
+}
+
+static void popup_show(int row, int col)
+{
+    const kbd_key_t (*rows)[12] = layout();
+    const kbd_key_t *k = &rows[row][col];
+
+    int kx, ky, kw, kh;
+    key_rect(row, col, &kx, &ky, &kw, &kh);
+
+    int px = kx + kw / 2 - KBD_POPUP_W / 2;
+    if (px < 0) px = 0;
+    if (px > GRID_W - KBD_POPUP_W) px = GRID_W - KBD_POPUP_W;
+
+    int py = ky - KBD_POPUP_H - 2;
+    if (py < GRID_Y) py = ky + kh + 2;              // top row: show it below
+    if (py + KBD_POPUP_H > STATUS_Y) py = STATUS_Y - KBD_POPUP_H;
+
+    if (s_popup_shown && px == s_popup_x && py == s_popup_y &&
+        row == s_popup_row && col == s_popup_col) {
+        return;                                      // already exactly there
+    }
+    popup_hide();
+
+    uint16_t label[4];
+    int n = label_codepoints(k, row, col, label, 4);
+    int scale = (n == 1) ? 3 : 2;
+    int label_w = n * FONT_CELL_W * scale;
+    int label_h = FONT_CELL_H * scale;
+
+    for (int y = 0; y < KBD_POPUP_H; y++) {
+        for (int x = 0; x < KBD_POPUP_W; x++) {
+            bool edge = (x < 2) || (x >= KBD_POPUP_W - 2) ||
+                        (y < 2) || (y >= KBD_POPUP_H - 2);
+            s_popupbuf[y * KBD_POPUP_W + x] = edge ? C_POPUP_EDGE : C_POPUP_BG;
+        }
+    }
+    int lx = (KBD_POPUP_W - label_w) / 2;
+    int ly = (KBD_POPUP_H - label_h) / 2;
+    for (int i = 0; i < n; i++) {
+        draw_glyph(s_popupbuf, KBD_POPUP_W, KBD_POPUP_H,
+                   lx + i * FONT_CELL_W * scale, ly, label[i], C_POPUP_FG, scale);
+    }
+
+    lcd_raw_push(s_popupbuf, px, py, KBD_POPUP_W, KBD_POPUP_H);
+
+    s_popup_shown = true;
+    s_popup_x = px;
+    s_popup_y = py;
+    s_popup_row = row;
+    s_popup_col = col;
+}
+
+void kbd_refresh_overlay(bool grid_was_repainted)
+{
+    // render_frame() paints the terminal grid, which sits under the popup when
+    // the popup reaches above the keyboard — so it has to be put back on top.
+    if (!s_popup_shown || !grid_was_repainted) return;
+    if (s_popup_y >= KBD_Y) return;                  // never overlapped the grid
+    lcd_raw_push(s_popupbuf, s_popup_x, s_popup_y, KBD_POPUP_W, KBD_POPUP_H);
 }
 
 void kbd_draw(void)
@@ -334,6 +454,9 @@ void kbd_init(void)
     s_layer = 0;
     s_shift = s_ctrl = MOD_OFF;
     s_down_row = s_down_col = -1;
+    s_repeat_fired = false;
+    s_ignore_until_release = false;
+    s_popup_shown = false;
 }
 
 bool kbd_visible(void) { return s_visible; }
@@ -350,6 +473,7 @@ void kbd_show(void)
 void kbd_hide(void)
 {
     if (!s_visible) return;
+    s_popup_shown = false;          // going away with the rest of the keyboard
     s_visible = false;
     s_down_row = s_down_col = -1;
     // The model has not changed, so the shadow diff would repaint nothing —
@@ -358,83 +482,153 @@ void kbd_hide(void)
     render_invalidate_all();
 }
 
-bool kbd_handle_touch(const touch_event_t *ev)
+// Which key is under a point? Returns false when the point is off the keyboard.
+static bool key_at_point(int x, int y, int *out_row, int *out_col)
 {
-    if (ev->type == TOUCH_NONE) return false;
-
-    if (!s_visible) {
-        if (ev->type == TOUCH_PRESS) { kbd_show(); return true; }
-        return false;
-    }
-
-    if (ev->type == TOUCH_RELEASE) {
-        if (s_down_row >= 0) {
-            int r = s_down_row, c = s_down_col;
-            s_down_row = s_down_col = -1;
-            draw_key(r, c, false);
-        }
-        return true;
-    }
-
-    if (ev->type == TOUCH_REPEAT) {
-        if (s_down_row >= 0) {
-            const kbd_key_t *k = &layout()[s_down_row][s_down_col];
-            emit_key(k);
-        }
-        return true;
-    }
-
-    // TOUCH_PRESS
-    if (ev->y < KBD_Y) {            // tap outside the keyboard dismisses it
-        kbd_hide();
-        return true;
-    }
-
-    int row = (ev->y - KBD_Y) / KBD_KEY_H;
-    if (row < 0 || row >= KBD_ROWS) return true;
-    int unit = ev->x / KBD_UNIT_W;
+    if (y < KBD_Y || y >= KBD_Y + KBD_H) return false;
+    int row = (y - KBD_Y) / KBD_KEY_H;
+    if (row < 0 || row >= KBD_ROWS) return false;
+    int unit = x / KBD_UNIT_W;
+    if (unit < 0) unit = 0;
     if (unit >= KBD_UNITS) unit = KBD_UNITS - 1;
-
     int col = key_at_unit(row, unit, NULL, NULL);
-    if (col < 0) return true;
+    if (col < 0) return false;
+    *out_row = row;
+    *out_col = col;
+    return true;
+}
 
-    const kbd_key_t *k = &layout()[row][col];
-
+// Move the highlight and preview to a different key mid-press.
+static void retarget(int row, int col)
+{
+    if (row == s_down_row && col == s_down_col) return;
+    int prev_r = s_down_row, prev_c = s_down_col;
     s_down_row = row;
     s_down_col = col;
-    draw_key(row, col, true);
-    touch_enable_repeat((k->flags & KF_REPEAT) != 0);
+    if (prev_r >= 0) draw_key(prev_r, prev_c, false);
+    if (row >= 0) {
+        draw_key(row, col, true);
+        popup_show(row, col);
+        touch_enable_repeat((layout()[row][col].flags & KF_REPEAT) != 0);
+    } else {
+        popup_hide();
+        touch_enable_repeat(false);
+    }
+}
+
+// Act on the key that was under the finger when it lifted.
+static void commit(int row, int col)
+{
+    const kbd_key_t *k = &layout()[row][col];
 
     switch (k->code) {
     case K_SHIFT:
         s_shift = cycle_mod(s_shift);
-        kbd_draw();                 // every letter label changes
-        return true;
+        kbd_draw();                 // every letter label changes with shift
+        return;
     case K_CTRL:
         s_ctrl = cycle_mod(s_ctrl);
         redraw_modifiers();
-        draw_key(row, col, true);   // keep the press highlight
-        return true;
+        return;
     case K_LAYER:
         s_layer ^= 1;
-        s_down_row = s_down_col = -1;
         kbd_draw();
-        return true;
+        return;
     case K_HIDE:
         kbd_hide();
-        return true;
+        return;
     case K_ZOOM:
         render_set_scale(render_get_scale() > 1 ? 1 : 2);
-        draw_key(row, col, true);
-        return true;
+        draw_key(row, col, false);
+        return;
     default:
         break;
     }
 
     emit_key(k);
     consume_oneshots();
-    draw_key(row, col, true);       // consume_oneshots may have repainted it
-    return true;
+}
+
+bool kbd_handle_touch(const touch_event_t *ev)
+{
+    if (ev->type == TOUCH_NONE) return false;
+
+    if (!s_visible) {
+        if (ev->type == TOUCH_PRESS) {
+            kbd_show();
+            // Swallow the rest of this contact: the tap that summoned the
+            // keyboard must not also press whatever key appeared under it.
+            s_ignore_until_release = true;
+            return true;
+        }
+        return false;
+    }
+
+    if (s_ignore_until_release) {
+        if (ev->type == TOUCH_RELEASE) s_ignore_until_release = false;
+        return true;
+    }
+
+    switch (ev->type) {
+    case TOUCH_PRESS: {
+        s_repeat_fired = false;
+        int row, col;
+        if (!key_at_point(ev->x, ev->y, &row, &col)) {
+            // Started off the keyboard — a tap-outside dismissal, resolved on
+            // release so it stays consistent with the keys.
+            s_press_began_outside = true;
+            s_down_row = s_down_col = -1;
+            return true;
+        }
+        s_press_began_outside = false;
+        s_down_row = s_down_col = -1;
+        retarget(row, col);
+        return true;
+    }
+
+    case TOUCH_MOVE: {
+        int row, col;
+        if (key_at_point(ev->x, ev->y, &row, &col)) {
+            retarget(row, col);
+        } else {
+            retarget(-1, -1);        // slid off: nothing is armed any more
+        }
+        return true;
+    }
+
+    case TOUCH_REPEAT:
+        if (s_down_row >= 0) {
+            s_repeat_fired = true;
+            emit_key(&layout()[s_down_row][s_down_col]);
+        }
+        return true;
+
+    case TOUCH_RELEASE: {
+        int row = s_down_row, col = s_down_col;
+        popup_hide();
+        s_down_row = s_down_col = -1;
+        touch_enable_repeat(false);
+
+        if (row < 0) {
+            // Nothing armed. Dismiss only if the whole gesture happened off the
+            // keyboard — a keypress that was dragged clear of the keys is a
+            // deliberate cancel, and must not take the keyboard away with it.
+            if (s_press_began_outside && ev->y < KBD_Y) kbd_hide();
+            s_press_began_outside = false;
+            return true;
+        }
+        s_press_began_outside = false;
+        draw_key(row, col, false);
+        // A key that auto-repeated has already sent everything it owes; firing
+        // once more on release would give a stray extra character.
+        if (!s_repeat_fired) commit(row, col);
+        s_repeat_fired = false;
+        return true;
+    }
+
+    default:
+        return true;
+    }
 }
 
 bool kbd_shift_active(void)  { return s_shift != MOD_OFF; }

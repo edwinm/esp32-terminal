@@ -207,7 +207,8 @@ static void draw_sample(void)
     feed("  user@server:~$ htop\033[5C\033[7m \033[0m");
 }
 
-// Tap a key by screen coordinate and report what it put on the wire.
+// Tap a key by screen coordinate and report what it put on the wire. The byte
+// is emitted on RELEASE, not press, so both halves are required.
 static const char *tap(int x, int y)
 {
     s_sent_len = 0;
@@ -215,6 +216,22 @@ static const char *tap(int x, int y)
     touch_event_t press = { TOUCH_PRESS, (uint16_t)x, (uint16_t)y };
     touch_event_t release = { TOUCH_RELEASE, (uint16_t)x, (uint16_t)y };
     kbd_handle_touch(&press);
+    kbd_handle_touch(&release);
+    return s_sent;
+}
+
+// Press one key, slide to another, then lift: the key under the finger at
+// release is the one that counts. This is the whole point of emit-on-release —
+// it lets you correct a mis-hit before committing to it.
+static const char *tap_slide(int x0, int y0, int x1, int y1)
+{
+    s_sent_len = 0;
+    s_sent[0] = '\0';
+    touch_event_t press = { TOUCH_PRESS, (uint16_t)x0, (uint16_t)y0 };
+    touch_event_t move = { TOUCH_MOVE, (uint16_t)x1, (uint16_t)y1 };
+    touch_event_t release = { TOUCH_RELEASE, (uint16_t)x1, (uint16_t)y1 };
+    kbd_handle_touch(&press);
+    kbd_handle_touch(&move);
     kbd_handle_touch(&release);
     return s_sent;
 }
@@ -380,13 +397,30 @@ static void test_keyboard_bytes(void)
         }
     }
 
-    // A tap above the keyboard dismisses it.
-    touch_event_t outside = { TOUCH_PRESS, 100, KBD_Y - 10 };
-    kbd_handle_touch(&outside);
+    // Slide-to-correct: the key under the finger at release wins, not the one
+    // it landed on. On 6mm keys this is the difference between a typo and a
+    // correction, so it is worth asserting rather than assuming.
+    expect(tap_slide(key_x(0, 1), key_y(0), key_x(1, 1), key_y(0)),
+           "w", "press q, slide to w, release -> w");
+    expect(tap_slide(key_x(4, 1), key_y(1), key_x(4, 1), key_y(2)),
+           "v", "sliding across rows retargets too");
+
+    // Sliding off the keyboard entirely cancels: nothing is sent.
+    expect(tap_slide(key_x(0, 1), key_y(0), 100, KBD_Y - 30),
+           "", "sliding off the keyboard cancels the keypress");
+
+    // A tap above the keyboard dismisses it — on release, like everything else.
+    tap(100, KBD_Y - 10);
     if (kbd_visible()) { printf("  FAIL tap above the keyboard did not dismiss it\n"); s_failures++; }
-    touch_event_t anywhere = { TOUCH_PRESS, 100, 100 };
-    kbd_handle_touch(&anywhere);
+
+    // And a tap on the terminal brings it back. That press must be swallowed:
+    // it must not also activate whatever key appears underneath it.
+    const char *sent = tap(100, 100);
     if (!kbd_visible()) { printf("  FAIL tap on the terminal did not raise the keyboard\n"); s_failures++; }
+    if (sent[0] != '\0') {
+        printf("  FAIL the tap that opened the keyboard also typed \"%s\"\n", sent);
+        s_failures++;
+    }
 }
 
 int main(int argc, char **argv)
@@ -420,6 +454,10 @@ int main(int argc, char **argv)
         kbd_show();
         test_keyboard_bytes();
         kbd_draw();
+        // Leave a finger resting on a key so the preview popup is in the PNG.
+        touch_event_t hold = { TOUCH_PRESS, (uint16_t)key_x(4, 1),
+                               (uint16_t)key_y(1) };
+        kbd_handle_touch(&hold);
     }
 
     render_frame();

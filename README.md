@@ -207,30 +207,61 @@ case "$(tty)" in /dev/ttyACM*) export TERM=xterm-256color ;; esac
 EOF
 ```
 
-### Optional — a stable name if the server has other ACM devices
+### Step 6 — survive unplugging
 
-`ttyACM0` is assigned in plug order, so a second device can steal it and orphan
-the getty. Pin this board by its chip ID (the hex from step 2):
+Do this one. It is tempting to skip, but a terminal you carry to a server is
+going to be unplugged and replugged constantly, and `serial-getty@ttyACM0` does
+not survive that on its own:
+
+- `ttyACM0` is assigned in plug order, so a replug can land on `ttyACM1` and
+  leave the getty bound to a device that no longer exists.
+- The stock serial getty is `BindsTo=` its device, so it *stops* when the board
+  is unplugged and does not necessarily come back when the board returns.
+
+The symptom on the board is the status strip reading **`USB idle … no getty
+attached`** — the link is fine and the host has enumerated it, but nothing has
+opened the port.
+
+Give the board a fixed name and bind the getty to that instead:
 
 ```bash
-sudo tee /etc/udev/rules.d/99-esp32-term.rules <<'EOF'
-SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="4001", SYMLINK+="esp32term"
+sudo tee /etc/udev/rules.d/99-esp32-term.rules >/dev/null <<'EOF'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="4001", \
+  SYMLINK+="esp32term", TAG+="systemd", ENV{SYSTEMD_WANTS}="serial-getty@esp32term.service"
 EOF
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-With several of these boards, add `ATTRS{serial}=="A1B2C3D4E5F6"` (your own hex)
-to the rule. Then run the getty on the symlink instead:
+`SYMLINK+` gives the stable name; `SYSTEMD_WANTS` is what actually starts the
+getty each time the board is plugged in. Then move the getty over:
 
 ```bash
 sudo systemctl disable --now serial-getty@ttyACM0.service
 sudo systemctl enable --now serial-getty@esp32term.service
 ```
 
+Redo the `TERM` drop-in from step 5 against the new name:
+
+```bash
+sudo mkdir -p /etc/systemd/system/serial-getty@esp32term.service.d
+sudo tee /etc/systemd/system/serial-getty@esp32term.service.d/term.conf >/dev/null <<'EOF'
+[Service]
+Environment=TERM=xterm-256color
+EOF
+sudo systemctl daemon-reload
+```
+
+Now unplug and replug: the login prompt should come back on its own.
+
+With more than one of these boards, add `ATTRS{serial}=="A1B2C3D4E5F6"` (your own
+hex from step 2) to the rule and give each a distinct `SYMLINK+`.
+
 ### Troubleshooting
 
 | symptom | cause |
 |---|---|
+| status strip says `no getty attached` | the host enumerated the board but nothing opened the port. Usually a replug that landed on a different `ttyACM*`, or a getty that stopped when the board was unplugged — do step 6 |
+| worked before, dead after replugging | same thing; step 6 is what fixes it permanently |
 | no `/dev/ttyACM*` at all | wrong socket — you are in the CP2104 one (`ttyUSB*`) |
 | screen is dark, nothing enumerates | the cable is charge-only; use a data cable |
 | board shows the splash but a getty is running | it booted after the getty opened the port, so the banner was missed — press Enter |

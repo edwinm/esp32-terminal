@@ -16,7 +16,9 @@
 esp_err_t render_init(void);
 
 // Draw one frame if anything changed. Cheap to call when nothing has.
-void render_frame(void);
+// Returns true if any pixels were pushed, so overlays drawn on top of the grid
+// know whether they need redrawing.
+bool render_frame(void);
 
 // Force a repaint of model rows [r0, r1] on the next frame. Needed for changes
 // the model does not know about: the keyboard being dismissed, the viewport

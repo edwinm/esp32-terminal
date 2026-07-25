@@ -231,7 +231,7 @@ void render_clear_grid(void)
     render_invalidate_all();
 }
 
-void render_frame(void)
+bool render_frame(void)
 {
     int cx, cy;
     bool cursor_visible, cursor_blink, reverse_video;
@@ -265,7 +265,7 @@ void render_frame(void)
         s_last_reverse_video = reverse_video;
     } else if (gen == s_last_generation &&
                cx == s_prev_cx && cy == s_prev_cy && cursor_on == s_prev_cursor_on) {
-        return;                                  // nothing at all to do
+        return false;                            // nothing at all to do
     }
     s_last_generation = gen;
 
@@ -288,6 +288,7 @@ void render_frame(void)
     const int cw = CELL_W * s_scale;
     const int chh = CELL_H * s_scale;
 
+    bool painted = false;
     lcd_raw_start();
 
     for (int i = 0; i < rows; i++) {
@@ -337,6 +338,7 @@ void render_frame(void)
                          stride, chh);
 
         memcpy(&s_shadow[r][c0], &s_scratch[c0], span * sizeof(term_cell_t));
+        painted = true;
     }
 
     // The sliver below the last visible row, when the available height is not
@@ -349,7 +351,9 @@ void render_frame(void)
                               lcd_rgb(0, 0, 0));
         }
         s_need_letterbox = false;
+        painted = true;
     }
 
     lcd_raw_end();
+    return painted;
 }

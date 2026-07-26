@@ -12,3 +12,4 @@ screen.ppm
 __pycache__/
 # tools/mkrelease.sh output — attach to a GitHub release, do not commit
 release/
+pix/

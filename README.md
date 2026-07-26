@@ -10,6 +10,12 @@ commands. `htop`, `vim` and `less` work.
 
 The device is the terminal — it does not emulate a USB keyboard for the host.
 
+![The board running htop on a headless mini PC, connected by a single USB-C cable](docs/device.jpg)
+
+Running `htop` on a headless HP ProDesk over one USB-C cable, which carries both
+power and the terminal. The strip along the bottom edge is the board's own status
+line, not part of htop.
+
 ## Quick start
 
 ```bash

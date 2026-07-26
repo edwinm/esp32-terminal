@@ -460,6 +460,40 @@ locked rack, or on a desk with the server elsewhere. If that is your situation,
 prefer the getty, or point the dashboard at something that reveals less than a
 process list (`watch` on a handful of metrics, say).
 
+## Installing without compiling
+
+Prebuilt images are attached to each [release]. One file, flashed at offset 0 —
+it already contains the bootloader, partition table and application, so there
+are no offsets to get right.
+
+Connect the board's **UART (CP2104)** socket — the flashing one, not the
+terminal one — and:
+
+```bash
+pip install esptool
+esptool.py --chip esp32s3 write_flash 0x0 esp32-terminal-<version>.bin
+```
+
+On Linux add yourself to `dialout` first, or run it with `sudo`.
+
+To build such an image yourself:
+
+```bash
+./tools/mkrelease.sh
+```
+
+It writes `release/esp32-terminal-<git-describe>.bin`, then checks its own work
+— each source image must appear byte-for-byte at its offset with erased flash
+between them — and emits a `manifest.json` for [ESP Web Tools], which lets the
+same file be flashed from a browser over WebSerial with no toolchain installed
+at all. Serve the two side by side (GitHub Pages works) if you want that.
+
+The `release/` directory is not committed; attach its contents to a GitHub
+release instead.
+
+[release]: https://github.com/edwinm/esp32-terminal/releases
+[ESP Web Tools]: https://esphome.github.io/esp-web-tools/
+
 ## Build & flash
 
 Needs [PlatformIO](https://platformio.org/install). It downloads the ESP-IDF
